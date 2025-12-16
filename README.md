@@ -1,3 +1,7 @@
+# Luban_rust 分支
+- 基于鲁班的RUST语言重构版
+
+
 # Luban
 
 [![Build Status](https://travis-ci.org/Curzibn/Luban.svg?branch=master)](https://travis-ci.org/Curzibn/Luban)
