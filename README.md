@@ -1,130 +1,172 @@
 # Luban_rust 分支
-- 基于鲁班的RUST语言重构版
 
+本分支为 **LLM 网关提供图片压缩的 MCP 服务**而生：网关侧的模型读到图片后需要回调压缩，这里就是那个压缩后端。
 
-# Luban
+算法取自鲁班（Luban）作者的反向推算压缩策略，用 Rust 重构实现。因为是给 LLM / MCP 调用，**不还原安卓侧的接口**——没有 Gradle 依赖、没有 Java/Kotlin API、没有示例 App，只对外提供 HTTP API 与 MCP 服务。
 
-[![Build Status](https://travis-ci.org/Curzibn/Luban.svg?branch=master)](https://travis-ci.org/Curzibn/Luban)
-[ ![Download](https://api.bintray.com/packages/curzibn/maven/Luban/images/download.svg) ](https://bintray.com/curzibn/maven/Luban/_latestVersion)
+移植自本仓 `master` 分支的 Kotlin 实现，逐条对齐：短边 1440 基准、超长图反转、超大图短边降 1/4、不放大、1024 万像素上限、偶数对齐、体积经验系数、JPEG 质量二分搜索。
 
-<div align="right">
-<a href="Translation/README-EN.md">:book: English Documentation</a>
-</div>
+工程位于本分支 `rust/` 子目录（Cargo 工程 + Dockerfile）。
 
-`Luban`（鲁班） —— `Android`图片压缩工具，仿微信朋友圈压缩策略。
+当前版本：**0.2.1**
 
-`Luban-turbo` —— 鲁班项目的`turbo`版本，[查看`trubo`分支](https://github.com/Curzibn/Luban/tree/turbo)。
+## 致敬与出处
 
-# 写在前面
+> **本项目致敬 [Curzibn/Luban](https://github.com/Curzibn/Luban)（鲁班）的原作者。**
+> 鲁班的「仿微信朋友圈」反向推算压缩策略，是本项目全部算法思路的来源。没有原作者把这套策略开源，就没有这个 Rust 版本。
 
-家境贫寒，工作繁忙。只能不定期更新，还望网友们见谅！
+- **算法出处**：压缩策略源自原作者开源的 **Curzibn/Luban**，本分支移植自本仓库 `master` 分支的 Kotlin 实现
+- **版权归属**：本分支的代码、文档与产物版权归本仓维护者——实现语言、部署形态、对外接口（HTTP / MCP）均已重写，是独立作品，并非上游代码的衍生
+- 沿用上游 Apache-2.0 许可发布，著作权仍归本仓维护者
+- 本分支只在自有内网 Gitea 维护，不向上游仓库回推
 
-# 项目描述
+---
 
-目前做`App`开发总绕不开图片这个元素。但是随着手机拍照分辨率的提升，图片的压缩成为一个很重要的问题。单纯对图片进行裁切，压缩已经有很多文章介绍。但是裁切成多少，压缩成多少却很难控制好，裁切过头图片太小，质量压缩过头则显示效果太差。
+## 目录结构
 
-于是自然想到`App`巨头“微信”会是怎么处理，`Luban`（鲁班）就是通过在微信朋友圈发送近100张不同分辨率图片，对比原图与微信压缩后的图片逆向推算出来的压缩算法。
+```
+rust/
+├── Cargo.toml
+├── Dockerfile
+└── src/
+    ├── main.rs       启动入口
+    ├── lib.rs        模块导出
+    ├── compress.rs   算法内核：目标尺寸计算 / 解码 / 缩放 / EXIF 转正 / JPEG 与 PNG 编码
+    ├── server.rs     HTTP API（axum）
+    └── mcp.rs        MCP 服务（Streamable HTTP）
+```
 
-因为有其他语言也想要实现`Luban`，所以描述了一遍[算法步骤](/DESCRIPTION.md)。
+## 压缩策略（与 master 一致）
 
-因为是逆向推算，效果还没法跟微信一模一样，但是已经很接近微信朋友圈压缩后的效果，具体看以下对比！
+| 规则 | 说明 |
+|---|---|
+| 基准短边 | 1440 |
+| 超长图 | 长边 ≥ 一定值且宽高比 > 阈值时，改为**长边**定 1440 |
+| 超大图 | 像素数超过阈值时，短边降到原短边的 1/4 |
+| 不放大 | 目标尺寸不会超过原图 |
+| 像素上限 | 目标像素总数封顶 |
+| 偶数对齐 | 宽高一律取偶数，最小 2 |
+| 体积估算 | 目标像素数 × 经验系数（四档） |
+| 极窄长图 | 保底目标体积，避免压得过狠 |
+| JPEG 质量搜索 | 先试 95，超标则在 [5, 95] 二分找「仍不超目标」的最大质量 |
+| 缩放滤波 | Lanczos3 |
+| EXIF | 8 种 Orientation 全部转正 |
 
-# 效果与对比
+### PNG 透明通道（`focus_alpha`）
 
-内容 | 原图 | `Luban` | `Wechat`
----- | ---- | ------ | ------
-截屏 720P |720*1280,390k|720*1280,87k|720*1280,56k
-截屏 1080P|1080*1920,2.21M|1080*1920,104k|1080*1920,112k
-拍照 13M(4:3)|3096*4128,3.12M|1548*2064,141k|1548*2064,147k
-拍照 9.6M(16:9)|4128*2322,4.64M|1032*581,97k|1032*581,74k
-滚动截屏|1080*6433,1.56M|1080*6433,351k|1080*6433,482k
+对应原 Luban 的 `setFocusAlpha` 语义，**不是「输出 PNG」的开关**：
 
-# 导入
+| 条件 | 输出 |
+|---|---|
+| PNG 源 + 确实带 alpha + `focus_alpha=true` | **PNG**，保留透明通道 |
+| PNG 带 alpha，但 `focus_alpha` 未开 | JPEG |
+| PNG 但全不透明（`focus_alpha` 无效） | JPEG |
+| 非 PNG 源 | JPEG |
+| 指定了固定 `quality` | JPEG |
+
+PNG 没有质量参数，因此改为按压缩级别（Best / Default / Fast）搜索目标体积。
+
+## HTTP API
+
+服务默认监听 `0.0.0.0:8900`（可用环境变量 `HOST` / `PORT` 覆盖）。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/health` | 健康检查，返回服务名与版本 |
+| GET | `/info` | 运行信息 |
+| POST | `/compress` | multipart 上传图片，返回压缩后的文件流 |
+| POST | `/compress/base64` | JSON 传 base64 图片，返回 base64 结果 |
+
+### 查询参数
+
+| 参数 | 类型 | 说明 |
+|---|---|---|
+| `quality` | 1-100 | 固定质量，给定则跳过体积搜索 |
+| `target_kb` | 整数 | 强制目标体积，不传则按算法估算 |
+| `width` | 整数 | 强制目标宽度 |
+| `height` | 整数 | 强制目标高度 |
+| `focus_alpha` | 布尔 | 集中压缩透明通道，默认 `false` |
+
+响应头会带上 `x-luban-format`（`jpeg` / `png`）与各阶段耗时。
+
+### 示例
 
 ```sh
-implementation 'top.zibin:Luban:1.1.8'
+# 健康检查
+curl http://127.0.0.1:8900/health
+
+# 上传压缩
+curl -X POST "http://127.0.0.1:8900/compress?focus_alpha=true" \
+     -F "file=@/path/to/image.png" -o out.png
+
+# base64 方式
+curl -X POST "http://127.0.0.1:8900/compress/base64?quality=80" \
+     -H 'Content-Type: application/json' \
+     -d '{"data":"<base64>","filename":"a.jpg"}'
 ```
 
-# 使用
+## MCP 服务
 
-### 方法列表
+端点：`POST /mcp`，遵循 MCP 2024-11-05 Streamable HTTP（JSON-RPC 2.0 over POST，**无状态**，不维护会话 id）。
 
-方法 | 描述
----- | ----
-load | 传入原图
-filter | 设置开启压缩条件
-ignoreBy | 不压缩的阈值，单位为K
-setFocusAlpha | 设置是否保留透明通道 
-setTargetDir | 缓存压缩图片路径
-setCompressListener | 压缩回调接口
-setRenameListener | 压缩前重命名接口
+### 工具列表
 
-### 异步调用
+| 工具 | 说明 |
+|---|---|
+| `compress_image` | 压缩单张图片，结果写入同目录 `<原名>.compressed.jpg` / `.compressed.png`，**不覆盖原文件** |
+| `compress_batch` | 批量压缩某个目录（`limit` 默认 20、上限 200），自动跳过已压缩产物 |
+| `image_info` | 只读查询：格式 / 尺寸 / 体积 |
 
-`Luban`内部采用`IO`线程进行图片压缩，外部调用只需设置好结果监听即可：
+三个工具一律收**路径**，不使用 base64 上传（大图塞不进模型上下文）。
 
-```java
-Luban.with(this)
-        .load(photos)
-        .ignoreBy(100)
-        .setTargetDir(getPath())
-        .filter(new CompressionPredicate() {
-          @Override
-          public boolean apply(String path) {
-            return !(TextUtils.isEmpty(path) || path.toLowerCase().endsWith(".gif"));
-          }
-        })
-        .setCompressListener(new OnCompressListener() {
-          @Override
-          public void onStart() {
-            // TODO 压缩开始前调用，可以在方法内启动 loading UI
-          }
+`compress_image` 支持 `quality` / `target_kb` / `width` / `height` / `focus_alpha` 参数。
 
-          @Override
-          public void onSuccess(File file) {
-            // TODO 压缩成功后调用，返回压缩后的图片文件
-          }
+### 路径白名单
 
-          @Override
-          public void onError(Throwable e) {
-            // TODO 当压缩过程出现问题时调用
-          }
-        }).launch();
+所有路径参数都会解析 symlink 后校验是否落在 `LUBAN_ALLOWED_ROOTS`（冒号分隔）之内，否则拒绝。
+
+## 部署
+
+```sh
+# 构建
+docker build -t luban-api:0.2.1 rust/
+
+# 运行
+docker run -d --name luban-api --restart unless-stopped \
+  -p 8900:8900 \
+  -v /your/images:/your/images \
+  -e LUBAN_ALLOWED_ROOTS=/your/images \
+  -e HOST=0.0.0.0 -e PORT=8900 \
+  luban-api:0.2.1
 ```
 
-### 同步调用
+镜像已推送至内网私库：`10.168.3.165:5000/aspnmy/luban-api:0.2.1`（同 `latest`）。
 
-同步方法请尽量避免在主线程调用以免阻塞主线程，下面以rxJava调用为例
+## 环境变量
 
-```java
-Flowable.just(photos)
-    .observeOn(Schedulers.io())
-    .map(new Function<List<String>, List<File>>() {
-      @Override public List<File> apply(@NonNull List<String> list) throws Exception {
-        // 同步方法直接返回压缩后的文件
-        return Luban.with(MainActivity.this).load(list).get();
-      }
-    })
-    .observeOn(AndroidSchedulers.mainThread())
-    .subscribe();
+| 变量 | 说明 |
+|---|---|
+| `HOST` | 监听地址，默认 `0.0.0.0` |
+| `PORT` | 监听端口，默认 `8900` |
+| `LUBAN_ALLOWED_ROOTS` | 允许访问的根目录，冒号分隔 |
+| `TZ` | 时区 |
+
+## 开发与验证
+
+```sh
+# 单元测试
+cargo test
+
+# 本地运行
+cargo run --release
 ```
 
-### RELEASE NOTE
+## 版本历史
 
-[Here](https://github.com/Curzibn/Luban/releases)
+| 版本 | 变更 |
+|---|---|
+| 0.2.1 | 还原 `setFocusAlpha` 语义：PNG 透明通道集中压缩（带 alpha 的 PNG 输出 PNG）、`focus_alpha` 参数、MCP/HTTP 双通道支持 |
+| 0.2.0 | MCP Streamable HTTP 三工具；路径白名单；缩放分支实测通过 |
+| 0.1.0 | 算法内核移植与基础 HTTP API |
 
-# License
-
-    Copyright 2016 Zheng Zibin
-    
-    Licensed under the Apache License, Version 2.0 (the "License");
-    you may not use this file except in compliance with the License.
-    You may obtain a copy of the License at
-    
-        http://www.apache.org/licenses/LICENSE-2.0
-    
-    Unless required by applicable law or agreed to in writing, software
-    distributed under the License is distributed on an "AS IS" BASIS,
-    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-    See the License for the specific language governing permissions and
-    limitations under the License.
+---
