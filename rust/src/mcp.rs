@@ -148,6 +148,10 @@ fn tools_list() -> Value {
                         "height": {
                             "type": "integer",
                             "description": "目标高"
+                        },
+                        "focus_alpha": {
+                            "type": "boolean",
+                            "description": "集中压缩透明通道（对应 Luban.setFocusAlpha）。仅当源图是带 alpha 的 PNG 时生效：输出改存 <原名>.compressed.png 并保留透明通道；其余情况仍输出 JPEG。默认 false"
                         }
                     },
                     "required": ["path"]
@@ -229,14 +233,18 @@ fn handle_tool_call(state: &McpState, name: &str, args: &Value) -> Value {
                 target_kb: args.get("target_kb").and_then(|v| v.as_u64()).map(|v| v as u32),
                 width: args.get("width").and_then(|v| v.as_u64()).map(|v| v as u32),
                 height: args.get("height").and_then(|v| v.as_u64()).map(|v| v as u32),
+                focus_alpha: args.get("focus_alpha").and_then(|v| v.as_bool()),
             };
             let fname = real.file_name().and_then(|s| s.to_str());
             match crate::server::compress_bytes(&raw, fname, &params) {
                 Ok((out, meta)) => {
-                    // 输出路径：<原名去扩展>.compressed.jpg（同目录）
+                    // 输出路径：<原名去扩展>.compressed.<ext>（同目录）；
+                    // ext 由实际输出格式决定（PNG + focus_alpha ⇒ .png，其余 .jpg）
+                    let ext = if meta.format == "png" { ".png" } else { ".jpg" };
                     let out_path = real.with_file_name(format!(
-                        "{}.compressed.jpg",
-                        real.file_stem().and_then(|s| s.to_str()).unwrap_or("image")
+                        "{}.compressed{}",
+                        real.file_stem().and_then(|s| s.to_str()).unwrap_or("image"),
+                        ext
                     ));
                     if let Err(e) = std::fs::write(&out_path, &out) {
                         return json!({"content": text_content(format!("写入失败: {e}")), "isError": true});
@@ -288,6 +296,7 @@ fn handle_tool_call(state: &McpState, name: &str, args: &Value) -> Value {
                 target_kb: args.get("target_kb").and_then(|v| v.as_u64()).map(|v| v as u32),
                 width: None,
                 height: None,
+                focus_alpha: args.get("focus_alpha").and_then(|v| v.as_bool()),
             };
 
             let entries = match std::fs::read_dir(&real_dir) {

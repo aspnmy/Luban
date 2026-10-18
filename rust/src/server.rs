@@ -10,7 +10,8 @@
 //!    图片动辄 5-20MB ⇒ 必须显式放宽到 [`MAX_BODY_BYTES`]。
 
 use crate::compress::{
-    calculate_target, compress_to_target, decode_with_orientation, resize_to,
+    calculate_target, compress_to_format, decide_format, decode_with_orientation, has_alpha,
+    resize_to, OutputFormat,
 };
 use axum::{
     extract::{DefaultBodyLimit, Multipart, Query},
@@ -44,6 +45,8 @@ pub struct CompressMeta {
     pub output_height: u32,
     /// 实际使用的 JPEG 质量
     pub quality: u8,
+    /// 实际输出格式（`jpeg` / `png`）
+    pub format: String,
     /// 解码耗时（毫秒）
     pub decode_ms: u128,
     /// 缩放到目标尺寸耗时（毫秒）
@@ -63,6 +66,16 @@ pub struct CompressParams {
     pub width: Option<u32>,
     /// 强制目标高度
     pub height: Option<u32>,
+    /// 集中压缩透明通道（对应原 `Luban.setFocusAlpha`）：
+    /// 仅当源图是 PNG 且带 alpha 时生效 ⇒ 输出 PNG、保留透明通道；其余仍输出 JPEG。
+    pub focus_alpha: Option<bool>,
+}
+
+impl CompressParams {
+    /// `focus_alpha` 缺省为 false（与原 Luban 默认值一致）。
+    pub fn focus_alpha(&self) -> bool {
+        self.focus_alpha.unwrap_or(false)
+    }
 }
 
 /// 根据请求参数与图片原始尺寸算出 (目标宽, 目标高, 目标体积KB)。
@@ -151,7 +164,8 @@ pub fn compress_bytes(
     let (rw, rh) = (resized.width(), resized.height());
 
     let t2 = std::time::Instant::now();
-    let out = compress_to_target(&resized, target_kb, params.quality)?;
+    let format = decide_format(fmt, has_alpha(&resized), params.focus_alpha(), params.quality, None);
+    let out = compress_to_format(&resized, format, target_kb, params.quality)?;
     let encode_ms = t2.elapsed().as_millis();
 
     // 反推实际质量：重新按 low 编码比较不可靠 ⇒ 用输出体积粗估
@@ -170,6 +184,10 @@ pub fn compress_bytes(
         output_width: rw,
         output_height: rh,
         quality,
+        format: match format {
+            OutputFormat::Jpeg => "jpeg".to_string(),
+            OutputFormat::Png => "png".to_string(),
+        },
         decode_ms,
         resize_ms,
         encode_ms,
@@ -188,6 +206,7 @@ fn meta_headers(meta: &CompressMeta) -> HeaderMap {
         ("x-luban-original-size", format!("{}x{}", meta.original_width, meta.original_height)),
         ("x-luban-output-size", format!("{}x{}", meta.output_width, meta.output_height)),
         ("x-luban-encode-ms", meta.encode_ms.to_string()),
+        ("x-luban-format", meta.format.clone()),
     ];
     for (k, v) in pairs {
         if let (Ok(name), Ok(val)) = (
@@ -254,9 +273,13 @@ async fn handle_compress(
         Ok((out, meta)) => {
             let mut resp = (StatusCode::OK, out).into_response();
             *resp.headers_mut() = meta_headers(&meta);
+            let ct = match meta.format.as_str() {
+                "png" => "image/png",
+                _ => "image/jpeg",
+            };
             resp.headers_mut().insert(
                 header::CONTENT_TYPE,
-                header::HeaderValue::from_static("image/jpeg"),
+                header::HeaderValue::from_static(ct),
             );
             resp
         }

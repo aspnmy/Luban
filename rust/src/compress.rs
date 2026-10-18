@@ -189,6 +189,69 @@ pub fn compress_to_target(img: &DynamicImage, target_kb: Option<u32>, fixed_qual
     }
 }
 
+/// 输出格式。对应原 `Luban` 的 `setCompressFormat` + `setFocusAlpha` 语义：
+/// - `fixed_quality` 已设置 ⇒ 直接走 JPEG（与原实现一致）；
+/// - PNG 且带 alpha 且 `focus_alpha` 开启 ⇒ 输出 PNG（保留透明通道）；
+/// - 其余一律输出 JPEG。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputFormat {
+    Jpeg,
+    Png,
+}
+
+/// 压缩结果：编码后的字节 + 实际输出格式（调用方据此决定扩展名）。
+#[derive(Debug, Clone)]
+pub struct Compressed {
+    pub bytes: Vec<u8>,
+    pub format: OutputFormat,
+}
+
+impl OutputFormat {
+    /// 文件扩展名（含点）
+    pub fn ext(&self) -> &'static str {
+        match self {
+            OutputFormat::Jpeg => ".jpg",
+            OutputFormat::Png => ".png",
+        }
+    }
+}
+
+/// 判断图片是否真的带 alpha 通道（全不透明的 RGBA 不算）。
+///
+/// 对应原 `Luban` 里 `hasAlpha = bitmap.hasAlpha()` 的判定；
+/// 原实现在 8 位 RGBA 上判断，这里同样只看 RGBA8。
+pub fn has_alpha(img: &DynamicImage) -> bool {
+    let rgba = img.to_rgba8();
+    rgba.pixels().any(|p| p.0[3] != 255)
+}
+
+/// 决定输出格式。
+///
+/// 规则（对应 `Luban.setCompressFormat` / `setFocusAlpha`）：
+/// - 显式 `fixed_quality` ⇒ JPEG（原实现在固定质量时直接走 JPEG 编码）；
+/// - 显式指定 `format` ⇒ 用它；
+/// - 否则：PNG 源 + 带 alpha + `focus_alpha` ⇒ PNG；
+/// - 其余 ⇒ JPEG。
+pub fn decide_format(
+    src: ImageFormat,
+    has_alpha: bool,
+    focus_alpha: bool,
+    fixed_quality: Option<u8>,
+    forced: Option<OutputFormat>,
+) -> OutputFormat {
+    if let Some(q) = forced {
+        return q;
+    }
+    if fixed_quality.is_some() {
+        return OutputFormat::Jpeg;
+    }
+    if src == ImageFormat::Png && has_alpha && focus_alpha {
+        OutputFormat::Png
+    } else {
+        OutputFormat::Jpeg
+    }
+}
+
 /// 编码为 JPEG（质量 1-100）。
 fn encode_jpeg(img: &DynamicImage, quality: u8) -> Result<Vec<u8>, String> {
     let mut buf = Vec::new();
@@ -197,6 +260,71 @@ fn encode_jpeg(img: &DynamicImage, quality: u8) -> Result<Vec<u8>, String> {
         .encode_image(&rgb)
         .map_err(|e| format!("JPEG 编码失败: {e}"))?;
     Ok(buf)
+}
+
+/// 按目标体积搜索 PNG 压缩级别（0-9，等价于 FocusAlpha 下的 PNG 重编码）。
+///
+/// `image` 的 PNG 编码器只有压缩级别、没有质量参数，因此策略与 JPEG 不同：
+/// - 无目标体积 ⇒ 用默认级别 6（兼顾速度与体积）；
+/// - 有目标体积 ⇒ 从高到低试（9→6→3→1），取第一个 ≤ 目标的；全超标 ⇒ 用 9（最高压缩）。
+///
+/// 级差不必细分：9 与 6 之间体积差通常只有几个百分点，逐级二分反而更慢。
+fn encode_png(img: &DynamicImage, target_kb: Option<u32>, fixed_level: Option<u8>) -> Result<Vec<u8>, String> {
+    if let Some(l) = fixed_level {
+        return encode_png_level(img, l);
+    }
+    let Some(target_kb) = target_kb else {
+        return encode_png_level(img, 6);
+    };
+    for level in [9u8, 6, 3, 1] {
+        let data = encode_png_level(img, level)?;
+        if data.len() as f64 / 1024.0 <= target_kb as f64 {
+            return Ok(data);
+        }
+    }
+    encode_png_level(img, 9)
+}
+
+/// 按指定压缩级别编码 PNG（保留 alpha 通道）。
+///
+/// `image` crate 的 PNG 编码器只暴露三档 `CompressionType`（Fast/Default/Best），
+/// 没有 0-9 连续级别，因此这里把调用方的 0-9 映射到最接近的一档：
+/// 高（≥8）→ Best，中（3-7）→ Default，低（≤2）→ Fast。
+fn encode_png_level(img: &DynamicImage, level: u8) -> Result<Vec<u8>, String> {
+    use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+    use image::ImageEncoder;
+
+    let compression = match level {
+        8..=u8::MAX => CompressionType::Best,
+        3..=7 => CompressionType::Default,
+        _ => CompressionType::Fast,
+    };
+    let rgba = img.to_rgba8();
+    let mut buf = Vec::new();
+    PngEncoder::new_with_quality(Cursor::new(&mut buf), compression, FilterType::Adaptive)
+        .write_image(
+            rgba.as_raw(),
+            rgba.width(),
+            rgba.height(),
+            image::ExtendedColorType::Rgba8,
+        )
+        .map_err(|e| format!("PNG 编码失败: {e}"))?;
+    Ok(buf)
+}
+
+/// 按目标格式压缩到目标体积。
+///
+/// 统一入口：JPEG 走质量二分，PNG 走压缩级别搜索。
+pub fn compress_to_format(
+    img: &DynamicImage,
+    format: OutputFormat,
+    target_kb: Option<u32>,
+    fixed_quality: Option<u8>,
+) -> Result<Vec<u8>, String> {
+    match format {
+        OutputFormat::Jpeg => compress_to_target(img, target_kb, fixed_quality),
+        OutputFormat::Png => encode_png(img, target_kb, None),
+    }
 }
 
 /// 解码图片并按 EXIF Orientation 转正。
@@ -285,5 +413,81 @@ mod tests {
         let t = calculate_target(600, 6000).unwrap();
         assert!(t.is_long_image);
         assert!(t.target_size_kb.is_some());
+    }
+
+    /// 全不透明的 RGBA 不算「带 alpha」（对应原 Luban 的 hasAlpha 语义）
+    #[test]
+    fn fully_opaque_rgba_has_no_alpha() {
+        let img = DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            8,
+            8,
+            image::Rgba([1, 2, 3, 255]),
+        ));
+        assert!(!has_alpha(&img));
+    }
+
+    #[test]
+    fn transparent_pixel_counts_as_alpha() {
+        let mut buf = image::RgbaImage::from_pixel(8, 8, image::Rgba([1, 2, 3, 255]));
+        buf.put_pixel(0, 0, image::Rgba([1, 2, 3, 0]));
+        assert!(has_alpha(&DynamicImage::ImageRgba8(buf)));
+    }
+
+    /// focus_alpha 只在「PNG 源 + 带 alpha」时切到 PNG 输出
+    #[test]
+    fn decide_format_matrix() {
+        use image::ImageFormat;
+        // PNG 源 + 带 alpha + 开启 focus_alpha ⇒ PNG
+        assert_eq!(
+            decide_format(ImageFormat::Png, true, true, None, None),
+            OutputFormat::Png
+        );
+        // 同样是 PNG 带 alpha，但 focus_alpha 关闭 ⇒ JPEG（与原实现一致）
+        assert_eq!(
+            decide_format(ImageFormat::Png, true, false, None, None),
+            OutputFormat::Jpeg
+        );
+        // 无 alpha 的 PNG ⇒ JPEG
+        assert_eq!(
+            decide_format(ImageFormat::Png, false, true, None, None),
+            OutputFormat::Jpeg
+        );
+        // 非 PNG 源（如 JPEG）即使带 alpha 也走 JPEG
+        assert_eq!(
+            decide_format(ImageFormat::Jpeg, true, true, None, None),
+            OutputFormat::Jpeg
+        );
+        // 指定固定质量 ⇒ JPEG（原实现行为）
+        assert_eq!(
+            decide_format(ImageFormat::Png, true, true, Some(80), None),
+            OutputFormat::Jpeg
+        );
+    }
+
+    /// PNG 编码必须保留透明通道（解码回来看 alpha 值）
+    #[test]
+    fn png_encode_keeps_transparency() {
+        let mut buf = image::RgbaImage::from_pixel(16, 16, image::Rgba([10, 20, 30, 255]));
+        buf.put_pixel(3, 4, image::Rgba([10, 20, 30, 0]));
+        let img = DynamicImage::ImageRgba8(buf);
+        let out = encode_png(&img, None, None).unwrap();
+        assert_eq!(&out[..4], b"\x89PNG");
+
+        let decoded = image::load_from_memory(&out).unwrap().to_rgba8();
+        assert_eq!(decoded.get_pixel(3, 4).0, [10, 20, 30, 0]);
+        assert_eq!(decoded.get_pixel(0, 0).0, [10, 20, 30, 255]);
+    }
+
+    /// 指定目标体积时，PNG 搜索结果不得超过目标（除非最高压缩也压不下去）
+    #[test]
+    fn png_respects_target_size_when_possible() {
+        let img = DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            256,
+            256,
+            image::Rgba([0, 0, 0, 255]),
+        ));
+        // 纯色图极易压缩，给一个宽裕目标后应当达标
+        let out = encode_png(&img, Some(50), None).unwrap();
+        assert!(out.len() as f64 / 1024.0 <= 50.0);
     }
 }
