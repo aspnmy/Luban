@@ -9,6 +9,7 @@
 //!   `io/ImageLoader.kt`                   → [`compress::decode_with_orientation`]
 
 pub mod compress;
+pub mod mcp;
 pub mod server;
 
 pub use compress::{calculate_target, compress_to_target, decode_with_orientation, resize_to, CompressionTarget};

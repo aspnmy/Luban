@@ -352,13 +352,17 @@ async fn handle_info() -> Json<serde_json::Value> {
 }
 
 /// 构造路由（供 main 与测试复用）
+///
+/// 同时挂上 MCP 端点 `/mcp`（JSON-RPC over HTTP），供网关作为工具服务接入。
 pub fn build_router() -> Router {
+    let mcp_state = crate::mcp::McpState::from_env();
     Router::new()
         .route("/health", get(handle_health))
         .route("/info", get(handle_info))
         .route("/compress", post(handle_compress))
         .route("/compress/base64", post(handle_compress_base64))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
+        .merge(crate::mcp::build_mcp_router(mcp_state))
 }
 
 // ── 极简 base64（避免为两个函数引入额外依赖）──────────────────────────
