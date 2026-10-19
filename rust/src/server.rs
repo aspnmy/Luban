@@ -25,8 +25,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
 
-/// 请求体上限：32MB（留足 20MB 原始图 + multipart 开销）
-pub const MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
+/// 请求体上限：500MB（留足 20MB 原始图 + multipart 开销）
+pub const MAX_BODY_BYTES: usize = 500 * 1024 * 1024;
 
 /// 压缩结果元信息（响应头 X-Luban-* 携带，便于调用方记录）
 #[derive(Debug, Serialize)]
