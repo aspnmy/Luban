@@ -37,7 +37,7 @@ rust/
     └── webui.html    内置 WebUI 单页（自包含，无外部资源）
 ```
 ## 压缩举例
-![压缩质量35](images/图片名.png)
+![压缩质量35](images/17924256525210.png)
 
 ![压缩前](images/vlcsnap-2026-10-19-23h47m22s024.png)
 ![压缩后](images/v_0001.mp4_thumb.jpg)
