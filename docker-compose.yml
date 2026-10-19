@@ -4,10 +4,20 @@
 #       MCP 只是给模型助手用的适配层，服务本身与模型无关。
 # 镜像：luban-api:0.2.3（内网私库 10.168.3.165:5000/aspnmy/luban-api:0.2.3）
 #
+# 端点（全部走同一个 8900 端口）：
+#   WebUI   GET  http://<host>:8900/          内置单页，浏览器直接打开即可用
+#   WebUI   GET  http://<host>:8900/index.html 同上
+#   HTTP    GET  http://<host>:8900/health    健康检查
+#   HTTP    GET  http://<host>:8900/info      运行信息
+#   HTTP    POST http://<host>:8900/compress  multipart 上传，返回压缩后的文件流
+#   HTTP    POST http://<host>:8900/compress/base64  JSON base64 进、base64 出
+#   MCP     POST http://<host>:8900/mcp       Streamable HTTP（无状态）
+#
 # 磁盘缓存开关（可选）：
 #   LUBAN_ALLOWED_ROOTS 未配置 ⇒ 压缩结果只从接口返回，服务器不留任何图片副本（默认，推荐）
 #   LUBAN_ALLOWED_ROOTS 已配置 ⇒ 启用磁盘模式，结果落盘到该目录（VIP/客户兜底备份等场景）
 #   多个目录用冒号分隔；配了就必须同时挂载对应目录。
+#   ⚠️ WebUI 只消费接口返回的字节流，不落盘，与本变量无关。
 
 services:
   luban-api:
