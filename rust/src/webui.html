@@ -63,11 +63,11 @@
     <form id="f">
       <div class="row">
         <div>
-          <label for="file">图片文件（jpeg / png / webp / bmp / gif / tiff，≤ 32 MB）</label>
+          <label for="file">图片文件（jpeg / png / webp / bmp / gif / tiff，≤ 500 MB）</label>
           <input type="file" id="file" accept="image/*" required>
         </div>
         <div>
-          <label for="quality">固定质量（1-100，留空 = 按算法搜索）</label>
+          <label for="quality">固定质量（1-100，留空 = 按算法搜索，质量低于35明显出现图片失真，保留更多图片细节推荐用85，仅保留缩略图或者不重要的图推荐用35）</label>
           <input type="number" id="quality" min="1" max="100" placeholder="如 85">
         </div>
         <div>
@@ -182,8 +182,8 @@
 
     var file = fileInput.files && fileInput.files[0];
     if (!file) { setStatus("请先选择图片", "err"); return; }
-    if (file.size > 32 * 1024 * 1024) {
-      setStatus("文件超过 32 MB 上限", "err"); return;
+    if (file.size > 500 * 1024 * 1024) {
+      setStatus("文件超过 500 MB 上限", "err"); return;
     }
 
     var fd = new FormData();
