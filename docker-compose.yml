@@ -22,9 +22,10 @@ services:
       PORT: "8900"
       # 留空 = 不落盘（默认）；填目录 = 启用服务器端缓存
       LUBAN_ALLOWED_ROOTS: ${LUBAN_ALLOWED_ROOTS:-}
-    volumes:
-      # 仅在启用磁盘缓存时需要挂载；目录须对容器用户 uid 10001 可写
-      - ${LUBAN_IMAGE_ROOT:-/mnt/e/OK/scripts}:${LUBAN_IMAGE_ROOT:-/mnt/e/OK/scripts}
+    # 磁盘模式才需要挂载：取消下面两行注释，并同时设置 LUBAN_ALLOWED_ROOTS。
+    # 目录须对容器用户 uid 10001 可写，否则压缩结果写不进去（Permission denied）。
+    # volumes:
+    #   - ${LUBAN_IMAGE_ROOT:-/your/images}:${LUBAN_IMAGE_ROOT:-/your/images}
     # 镜像自带非 root 用户 luban(uid 10001)
     user: "10001:10001"
     healthcheck:
