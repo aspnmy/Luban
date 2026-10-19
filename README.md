@@ -46,9 +46,9 @@ rust/
 
 ### jpg压缩策略
 - 压缩前大小10MB
-![压缩前](images/vlcsnap-2026-10-19-23h47m22s024.png)
+![压缩前](images/vlcsnap-2026-10-20-00h25m30s253.png)
 - 压缩后大小170KB 图片质量低于35以后图片失真度明显
-![压缩后](images/v_0001.mp4_thumb.jpg)
+![压缩后](images/v_0530.mp4_thumb.jpg)
 ## 压缩策略（与 master 一致）
 
 | 规则 | 说明 |
