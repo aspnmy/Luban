@@ -37,10 +37,17 @@ rust/
     └── webui.html    内置 WebUI 单页（自包含，无外部资源）
 ```
 ## 压缩举例
+### png压缩策略
 ![压缩质量35](images/17924256525210.png)
 - 压缩前大小14MB
 ![压缩前](images/vlcsnap-2026-10-19-23h47m22s024.png)
 - 压缩后大小325KB 图片质量低于35以后图片失真度明显
+![压缩后](images/v_0001.mp4_thumb.jpg)
+
+### jpg压缩策略
+- 压缩前大小10MB
+![压缩前](images/vlcsnap-2026-10-19-23h47m22s024.png)
+- 压缩后大小170KB 图片质量低于35以后图片失真度明显
 ![压缩后](images/v_0001.mp4_thumb.jpg)
 ## 压缩策略（与 master 一致）
 
