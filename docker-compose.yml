@@ -25,6 +25,8 @@ services:
     container_name: luban-api
     restart: unless-stopped
     ports:
+      # 同一个 8900 端口同时承载 WebUI（/、/index.html）、HTTP API 与 MCP（/mcp），
+      # 不另开端口；对外暴露的地址就是 http://<host>:8900/
       - "0.0.0.0:8900:8900"
     environment:
       TZ: Asia/Shanghai
