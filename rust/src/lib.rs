@@ -11,5 +11,6 @@
 pub mod compress;
 pub mod mcp;
 pub mod server;
+pub mod webui;
 
 pub use compress::{calculate_target, compress_to_target, decode_with_orientation, resize_to, CompressionTarget};

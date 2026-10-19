@@ -238,28 +238,20 @@ fn handle_tool_call(state: &McpState, name: &str, args: &Value) -> Value {
             let fname = real.file_name().and_then(|s| s.to_str());
             match crate::server::compress_bytes(&raw, fname, &params) {
                 Ok((out, meta)) => {
-                    // 输出路径：<原名去扩展>.compressed.<ext>（同目录）；
-                    // ext 由实际输出格式决定（PNG + focus_alpha ⇒ .png，其余 .jpg）
-                    let ext = if meta.format == "png" { ".png" } else { ".jpg" };
-                    let out_path = real.with_file_name(format!(
-                        "{}.compressed{}",
-                        real.file_stem().and_then(|s| s.to_str()).unwrap_or("image"),
-                        ext
-                    ));
-                    if let Err(e) = std::fs::write(&out_path, &out) {
-                        return json!({"content": text_content(format!("写入失败: {e}")), "isError": true});
-                    }
+                    let mime = if meta.format == "png" {
+                        "image/png"
+                    } else {
+                        "image/jpeg"
+                    };
                     let summary = format!(
-                        "压缩完成\n\
-                         原文件: {} ({} B, {}x{})\n\
-                         输出:   {} ({} B, {}x{})\n\
+                        "原文件: {} ({} B, {}x{})\n\
+                         输出:   {} B, {}x{}\n\
                          压缩率: {:.1}%（省 {:.1}%）\n\
                          耗时: 解码 {}ms / 缩放 {}ms / 编码 {}ms",
                         real.display(),
                         meta.original_bytes,
                         meta.original_width,
                         meta.original_height,
-                        out_path.display(),
                         meta.output_bytes,
                         meta.output_width,
                         meta.output_height,
@@ -269,7 +261,34 @@ fn handle_tool_call(state: &McpState, name: &str, args: &Value) -> Value {
                         meta.resize_ms,
                         meta.encode_ms
                     );
-                    json!({"content": text_content(summary), "isError": false})
+
+                    // 是否落盘由 LUBAN_ALLOWED_ROOTS 决定（磁盘模式开关）：
+                    // - 未配置 ⇒ 压缩结果直接放进 content 返回，本地不留任何产物
+                    //   （服务是 API 服务，消费方从接口取图；服务器存图片副本纯属占空间）
+                    // - 已配置 ⇒ 落盘到白名单目录，用于 VIP/兜底缓存、批量整理等场景
+                    if state.allowed_roots.is_empty() {
+                        let mut content = vec![json!({ "type": "text", "text": summary })];
+                        content.push(json!({
+                            "type": "image",
+                            "data": crate::server::base64_encode(&out),
+                            "mimeType": mime
+                        }));
+                        json!({ "content": content, "isError": false })
+                    } else {
+                        // 输出路径：<原名去扩展>.compressed.<ext>（同目录）；
+                        // ext 由实际输出格式决定（PNG + focus_alpha ⇒ .png，其余 .jpg）
+                        let ext = if meta.format == "png" { ".png" } else { ".jpg" };
+                        let out_path = real.with_file_name(format!(
+                            "{}.compressed{}",
+                            real.file_stem().and_then(|s| s.to_str()).unwrap_or("image"),
+                            ext
+                        ));
+                        if let Err(e) = std::fs::write(&out_path, &out) {
+                            return json!({"content": text_content(format!("写入失败: {e}")), "isError": true});
+                        }
+                        let with_path = format!("{}输出:   {}", summary, out_path.display());
+                        json!({"content": text_content(with_path), "isError": false})
+                    }
                 }
                 Err(e) => json!({"content": text_content(format!("压缩失败: {e}")), "isError": true}),
             }
@@ -285,6 +304,19 @@ fn handle_tool_call(state: &McpState, name: &str, args: &Value) -> Value {
             };
             if !real_dir.is_dir() {
                 return json!({"content": text_content(format!("不是目录: {}", real_dir.display())), "isError": true});
+            }
+
+            // 批量只在磁盘模式下有意义：逐张结果若全走 base64 会撑爆模型上下文，
+            // 因此未配置 LUBAN_ALLOWED_ROOTS 时直接拒绝，并提示改用单张压缩。
+            if state.allowed_roots.is_empty() {
+                return json!({
+                    "content": text_content(
+                        "批量压缩需要配置 LUBAN_ALLOWED_ROOTS（磁盘模式）：\
+                         未配置时服务不回写磁盘，批量结果无法以内容形式返回。\
+                         请改用 compress_image 逐张压缩，或为该部署配置允许目录。"
+                    ),
+                    "isError": true
+                });
             }
             let limit = args
                 .get("limit")

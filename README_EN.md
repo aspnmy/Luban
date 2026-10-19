@@ -8,7 +8,7 @@ Ported from the Kotlin implementation on this repository's `master` branch, alig
 
 The project lives in the `rust/` subdirectory of this branch (Cargo project + Dockerfile).
 
-Current version: **0.2.1**
+Current version: **0.2.3**
 
 ## Tribute and Provenance
 
@@ -32,7 +32,9 @@ rust/
     ├── lib.rs        module exports
     ├── compress.rs   algorithm core: target sizing / decode / resize / EXIF rotation / JPEG & PNG encoding
     ├── server.rs     HTTP API (axum)
-    └── mcp.rs        MCP service (Streamable HTTP)
+    ├── mcp.rs        MCP service (Streamable HTTP)
+    ├── webui.rs      built-in WebUI routes (page embedded via include_str!)
+    └── webui.html    built-in WebUI single page (self-contained, no external resources)
 ```
 
 ## Compression Strategy (aligned with master)
@@ -71,6 +73,8 @@ The service listens on `0.0.0.0:8900` by default (override with `HOST` / `PORT`)
 
 | Method | Path | Description |
 |---|---|---|
+| GET | `/` | built-in WebUI (self-contained single page, calls this service's own `/compress`) |
+| GET | `/index.html` | same as above |
 | GET | `/health` | health check, returns service name and version |
 | GET | `/info` | runtime information |
 | POST | `/compress` | upload an image as multipart, returns the compressed byte stream |
@@ -104,6 +108,17 @@ curl -X POST "http://127.0.0.1:8900/compress/base64?quality=80" \
      -d '{"data":"<base64>","filename":"a.jpg"}'
 ```
 
+## WebUI
+
+The image ships a self-contained single page: open `http://<host>:8900/` in a browser and it works — **no separate frontend to deploy, no CDN dependency**.
+
+- The page talks to **this service's own `POST /compress`** (multipart); there is no second backend
+- Supports fixed quality / target size / forced width and height / `focus_alpha`
+- Shows before/after bytes, output-to-original ratio, dimensions, format and encode time; both the original and the result can be downloaded
+- **Writes nothing to server disk**: the page only consumes the byte stream returned by the API, independent of `LUBAN_ALLOWED_ROOTS` (setting it does not make the WebUI write files)
+
+The page is shipped inside the binary (`include_str!`), so changing it requires rebuilding the image.
+
 ## MCP Service
 
 Endpoint: `POST /mcp`, following MCP 2024-11-05 Streamable HTTP (JSON-RPC 2.0 over POST, **stateless**, no session id).
@@ -120,26 +135,51 @@ All three tools take a **path**, never a base64 upload (a full image does not fi
 
 `compress_image` accepts `quality` / `target_kb` / `width` / `height` / `focus_alpha`.
 
-### Path allowlist
+### Disk-cache switch `LUBAN_ALLOWED_ROOTS`
 
-Every path argument is resolved (symlinks followed) and must fall under `LUBAN_ALLOWED_ROOTS` (colon-separated); otherwise it is rejected.
+By default the service **writes nothing to disk**: the compressed result is returned straight from the API and no image copy is left on the server.
+
+| Configuration | Behavior |
+|---|---|
+| **Not set** (default) | `compress_image` returns the image in `content` (base64) plus a summary; no local file is produced. `compress_batch` returns an error telling you to use single-image compression |
+| **Set** (colon-separated directories) | Disk mode: paths must fall under those roots, the result is written as `<name>.compressed.jpg/.png`, and the file path plus a summary are returned |
+
+Typical usage: leave it unset for normal/free calls (do not manufacture image copies on the server); set it when you need to keep a backup for customers (VIP scenarios).
+
+> ⚠️ **The two deployment forms are not interchangeable — decide which one you need before starting the container:**
+>
+> | Purpose | You must | If you omit it |
+> |---|---|---|
+> | **API / MCP compression only** (default, recommended) | Leave `LUBAN_ALLOWED_ROOTS` unset; **no image directory needs to be mounted** | No effect; results always come back through the API |
+> | **Server-side cache / customer fallback retrieval** (VIP) | ① Set `LUBAN_ALLOWED_ROOTS`; ② **mount those directories into the container**; ③ the directories must be writable by the container user `uid 10001` | Missing ② → the container cannot see the images and reports "path unavailable"; missing ③ or wrong ownership → `Permission denied`, the result cannot be written |
+>
+> **The calling pattern differs as well:**
+> - No-disk mode: the model/client **receives the image once** and stores it itself; the server keeps nothing, so repeated calls re-compress from scratch.
+> - Disk mode: after the call you must **fetch `<name>.compressed.jpg` from the allowlisted directory yourself**; compressing the same image again overwrites the previous output (no sequence number, no version history).
+>
+> **Do not mix the two**: e.g. setting `LUBAN_ALLOWED_ROOTS` without mounting the directory (every path check fails), or mounting a directory without setting the variable (the batch tool immediately reports "LUBAN_ALLOWED_ROOTS must be configured").
 
 ## Deployment
 
 ```sh
 # build
-docker build -t luban-api:0.2.1 rust/
+docker build -t luban-api:0.2.3 rust/
 
-# run
+# run (default: no disk writes)
+docker run -d --name luban-api --restart unless-stopped \
+  -p 8900:8900 -e HOST=0.0.0.0 -e PORT=8900 \
+  luban-api:0.2.3
+
+# run (disk mode: add the mount and the allowlist)
 docker run -d --name luban-api --restart unless-stopped \
   -p 8900:8900 \
   -v /your/images:/your/images \
   -e LUBAN_ALLOWED_ROOTS=/your/images \
   -e HOST=0.0.0.0 -e PORT=8900 \
-  luban-api:0.2.1
+  luban-api:0.2.3
 ```
 
-Image published to the internal registry: `10.168.3.165:5000/aspnmy/luban-api:0.2.1` (also `latest`).
+Image published to the internal registry: `10.168.3.165:5000/aspnmy/luban-api:0.2.3` (also `latest`).
 
 ## Environment variables
 
@@ -147,7 +187,7 @@ Image published to the internal registry: `10.168.3.165:5000/aspnmy/luban-api:0.
 |---|---|
 | `HOST` | listen address, default `0.0.0.0` |
 | `PORT` | listen port, default `8900` |
-| `LUBAN_ALLOWED_ROOTS` | allowed root directories, colon-separated |
+| `LUBAN_ALLOWED_ROOTS` | disk-cache switch. Empty = no disk writes (default); set to directories = disk mode, colon-separated |
 | `TZ` | timezone |
 
 ## Development
@@ -164,6 +204,8 @@ cargo run --release
 
 | Version | Changes |
 |---|---|
+| 0.2.3 | built-in WebUI single page (`GET /`, `/index.html`; shipped inside the binary, no external resources, calls its own `/compress`, no disk writes) |
+| 0.2.2 | `LUBAN_ALLOWED_ROOTS` became an optional disk-cache switch: unset ⇒ MCP returns image bytes and nothing is written to disk; set ⇒ results are written under the allowlisted directories. The compose mount became optional |
 | 0.2.1 | restore `setFocusAlpha` semantics: PNG alpha-channel compression (PNG with alpha stays PNG), `focus_alpha` parameter, available over both MCP and HTTP |
 | 0.2.0 | MCP Streamable HTTP with three tools; path allowlist; resize branch verified against real images |
 | 0.1.0 | algorithm core port and basic HTTP API |

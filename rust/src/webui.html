@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Luban 图片压缩</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px;
+    font: 14px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: #111318; color: #e6e8ee;
+    display: flex; flex-direction: column; align-items: center;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p.sub { color: #9aa3b2; margin: 0 0 20px; font-size: 13px; }
+  .card {
+    width: 100%; max-width: 720px;
+    background: #1a1e26; border: 1px solid #2a3040; border-radius: 10px;
+    padding: 20px;
+  }
+  .row { display: flex; gap: 16px; flex-wrap: wrap; }
+  .row > div { flex: 1 1 240px; }
+  label { display: block; color: #9aa3b2; font-size: 12px; margin: 0 0 6px; }
+  input[type=file], input[type=number], input[type=text] {
+    width: 100%; padding: 8px 10px;
+    background: #0f1218; color: #e6e8ee;
+    border: 1px solid #2a3040; border-radius: 6px;
+    font-size: 13px;
+  }
+  .check { display: flex; align-items: center; gap: 8px; color: #cdd3de; font-size: 13px; margin: 10px 0; }
+  .check input { accent-color: #4f8cff; }
+  button {
+    padding: 10px 18px; border: none; border-radius: 6px;
+    background: #4f8cff; color: #fff; font-size: 14px; cursor: pointer;
+    margin-top: 12px;
+  }
+  button:disabled { background: #33405c; cursor: wait; }
+  .status { margin-top: 14px; font-size: 13px; min-height: 1.4em; white-space: pre-wrap; }
+  .status.err { color: #ff7a7a; }
+  .status.ok { color: #7fd67f; }
+  .preview { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 16px; }
+  .preview figure { flex: 1 1 280px; margin: 0; background: #0f1218; border: 1px solid #2a3040; border-radius: 8px; padding: 10px; }
+  .preview img { width: 100%; max-height: 260px; object-fit: contain; display: block; margin: 0 auto 8px; }
+  .preview figcaption { font-size: 12px; color: #9aa3b2; text-align: center; word-break: break-all; }
+  .preview figcaption a { color: #7ab0ff; text-decoration: none; }
+  .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-top: 16px; }
+  .metrics div { background: #0f1218; border: 1px solid #2a3040; border-radius: 8px; padding: 10px; text-align: center; }
+  .metrics .k { font-size: 11px; color: #9aa3b2; display: block; }
+  .metrics .v { font-size: 15px; font-weight: 600; display: block; margin-top: 4px; }
+  .metrics .v.good { color: #7fd67f; }
+  .metrics .v.bad { color: #ff7a7a; }
+  footer { margin-top: 24px; color: #6b7385; font-size: 12px; }
+  @media (max-width: 520px) { body { padding: 12px; } .card { padding: 14px; } }
+</style>
+</head>
+<body>
+  <h1>Luban 图片压缩</h1>
+  <p class="sub">短边 1440 基准 · 超长图反转 · 超大图降 1/4 · 不放大 · JPEG 质量二分 · 8 种 EXIF 转正</p>
+
+  <div class="card">
+    <form id="f">
+      <div class="row">
+        <div>
+          <label for="file">图片文件（jpeg / png / webp / bmp / gif / tiff，≤ 32 MB）</label>
+          <input type="file" id="file" accept="image/*" required>
+        </div>
+        <div>
+          <label for="quality">固定质量（1-100，留空 = 按算法搜索）</label>
+          <input type="number" id="quality" min="1" max="100" placeholder="如 85">
+        </div>
+        <div>
+          <label for="target">目标体积（KB，留空 = 按算法估算）</label>
+          <input type="number" id="target" min="1" placeholder="如 200">
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label for="width">目标宽（px，留空 = 按比例）</label>
+          <input type="number" id="width" min="2">
+        </div>
+        <div>
+          <label for="height">目标高（px，留空 = 按比例）</label>
+          <input type="number" id="height" min="2">
+        </div>
+      </div>
+      <label class="check">
+        <input type="checkbox" id="focusAlpha">
+        保留透明通道（focus_alpha，仅对带 alpha 的 PNG 生效）
+      </label>
+      <button type="submit" id="btn">压缩</button>
+    </form>
+
+    <div class="status" id="status" aria-live="polite"></div>
+
+    <div class="metrics" id="metrics" hidden>
+      <div><span class="k">原始体积</span><span class="v" id="mOrig">-</span></div>
+      <div><span class="k">压缩后</span><span class="v" id="mOut">-</span></div>
+      <div><span class="k">输出/原始</span><span class="v" id="mRatio">-</span></div>
+      <div><span class="k">原始尺寸</span><span class="v" id="mOSz">-</span></div>
+      <div><span class="k">输出尺寸</span><span class="v" id="mOSz2">-</span></div>
+      <div><span class="k">格式</span><span class="v" id="mFmt">-</span></div>
+      <div><span class="k">编码耗时</span><span class="v" id="mMs">-</span></div>
+    </div>
+
+    <div class="preview" id="preview"></div>
+  </div>
+
+  <footer>luban-api · 自调用 <code>POST /compress</code>（multipart）· 服务器不落盘</footer>
+
+<script>
+(function () {
+  "use strict";
+
+  var form = document.getElementById("f");
+  var fileInput = document.getElementById("file");
+  var btn = document.getElementById("btn");
+  var status = document.getElementById("status");
+  var metrics = document.getElementById("metrics");
+  var preview = document.getElementById("preview");
+
+  function fmtBytes(n) {
+    if (n == null) return "-";
+    if (n < 1024) return n + " B";
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+    return (n / 1024 / 1024).toFixed(2) + " MB";
+  }
+
+  function setStatus(msg, kind) {
+    status.textContent = msg;
+    status.className = "status" + (kind ? " " + kind : "");
+  }
+
+  function setMetric(id, text, good) {
+    var el = document.getElementById(id);
+    el.textContent = text;
+    el.className = "v" + (good === true ? " good" : good === false ? " bad" : "");
+  }
+
+  function clearResult() {
+    metrics.hidden = true;
+    preview.innerHTML = "";
+  }
+
+  function makeFigure(title, blob, origName, isResult) {
+    var fig = document.createElement("figure");
+    var img = document.createElement("img");
+    var url = URL.createObjectURL(blob);
+    img.src = url;
+    img.alt = title;
+    var cap = document.createElement("figcaption");
+
+    var label = document.createElement("div");
+    label.textContent = title + " · " + fmtBytes(blob.size);
+    cap.appendChild(label);
+
+    var a = document.createElement("a");
+    var safe = (origName || "compressed").replace(/\.[a-z0-9]+$/i, "");
+    var ext;
+    if (isResult) {
+      // 输出格式由服务端决定（x-luban-format），只能按 blob 类型取
+      ext = blob.type === "image/png" ? ".png" : ".jpg";
+    } else {
+      // 原始图保持用户本地文件的真实扩展名（webp/bmp/gif/tiff 不能被写成 .jpg）
+      var m = /\.([a-z0-9]+)$/i.exec(origName || "");
+      ext = m ? "." + m[1].toLowerCase() : ".jpg";
+    }
+    a.href = url;
+    a.download = safe + (isResult ? "_compressed" : "") + ext;
+    a.textContent = "下载";
+    cap.appendChild(a);
+
+    fig.appendChild(img);
+    fig.appendChild(cap);
+    return fig;
+  }
+
+  form.addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    clearResult();
+
+    var file = fileInput.files && fileInput.files[0];
+    if (!file) { setStatus("请先选择图片", "err"); return; }
+    if (file.size > 32 * 1024 * 1024) {
+      setStatus("文件超过 32 MB 上限", "err"); return;
+    }
+
+    var fd = new FormData();
+    fd.append("file", file);
+    var q = document.getElementById("quality").value.trim();
+    var t = document.getElementById("target").value.trim();
+    var w = document.getElementById("width").value.trim();
+    var h = document.getElementById("height").value.trim();
+    var fa = document.getElementById("focusAlpha").checked;
+
+    // /compress 只从 query 读参数，multipart body 里只放文件
+    var qs = [];
+    if (q) qs.push("quality=" + encodeURIComponent(q));
+    if (t) qs.push("target_kb=" + encodeURIComponent(t));
+    if (w) qs.push("width=" + encodeURIComponent(w));
+    if (h) qs.push("height=" + encodeURIComponent(h));
+    if (fa) qs.push("focus_alpha=true");
+    var url = "/compress" + (qs.length ? "?" + qs.join("&") : "");
+
+    btn.disabled = true;
+    btn.textContent = "压缩中…";
+    setStatus("上传并压缩中…");
+
+    var origBlob = file;
+
+    fetch(url, { method: "POST", body: fd })
+      .then(function (resp) {
+        if (!resp.ok) {
+          return resp.json().catch(function () { return {}; }).then(function (j) {
+            throw new Error(j.error || ("HTTP " + resp.status));
+          });
+        }
+        return resp.blob().then(function (blob) {
+          return { blob: blob, headers: resp.headers };
+        });
+      })
+      .then(function (r) {
+        var out = r.blob;
+        var headers = r.headers;
+        var origBytes = headers.get("x-luban-original-bytes");
+        var outBytes = headers.get("x-luban-output-bytes");
+        var ratio = headers.get("x-luban-ratio");
+        var osz = headers.get("x-luban-original-size");
+        var osz2 = headers.get("x-luban-output-size");
+        var ms = headers.get("x-luban-encode-ms");
+        var fmt = headers.get("x-luban-format") || out.type.split("/")[1] || "?";
+
+        setMetric("mOrig", fmtBytes(origBytes ? parseInt(origBytes, 10) : origBlob.size));
+        setMetric("mOut", fmtBytes(outBytes ? parseInt(outBytes, 10) : out.size));
+        if (ratio) {
+          var pct = (parseFloat(ratio) * 100).toFixed(1) + "%";
+          setMetric("mRatio", pct, parseFloat(ratio) <= 1);
+        }
+        setMetric("mOSz", osz || "-");
+        setMetric("mOSz2", osz2 || "-");
+        setMetric("mFmt", fmt);
+        setMetric("mMs", ms ? ms + " ms" : "-");
+        metrics.hidden = false;
+
+        preview.appendChild(makeFigure("原始", origBlob, file.name, false));
+        preview.appendChild(makeFigure("压缩后", out, file.name, true));
+
+        setStatus("完成：压缩率 " + (ratio ? (parseFloat(ratio) * 100).toFixed(1) : "?") + "%", "ok");
+      })
+      .catch(function (err) {
+        setStatus("失败：" + err.message, "err");
+      })
+      .then(function () {
+        btn.disabled = false;
+        btn.textContent = "压缩";
+      });
+  });
+})();
+</script>
+</body>
+</html>

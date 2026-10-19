@@ -8,7 +8,7 @@
 
 工程位于本分支 `rust/` 子目录（Cargo 工程 + Dockerfile）。
 
-当前版本：**0.2.1**
+当前版本：**0.2.3**
 
 ## 致敬与出处
 
@@ -32,7 +32,9 @@ rust/
     ├── lib.rs        模块导出
     ├── compress.rs   算法内核：目标尺寸计算 / 解码 / 缩放 / EXIF 转正 / JPEG 与 PNG 编码
     ├── server.rs     HTTP API（axum）
-    └── mcp.rs        MCP 服务（Streamable HTTP）
+    ├── mcp.rs        MCP 服务（Streamable HTTP）
+    ├── webui.rs      内置 WebUI 路由（页面经 include_str! 编进二进制）
+    └── webui.html    内置 WebUI 单页（自包含，无外部资源）
 ```
 
 ## 压缩策略（与 master 一致）
@@ -71,6 +73,8 @@ PNG 没有质量参数，因此改为按压缩级别（Best / Default / Fast）�
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
+| GET | `/` | 内置 WebUI 页面（自包含单页，直接调用本服务 `/compress`） |
+| GET | `/index.html` | 同上 |
 | GET | `/health` | 健康检查，返回服务名与版本 |
 | GET | `/info` | 运行信息 |
 | POST | `/compress` | multipart 上传图片，返回压缩后的文件流 |
@@ -104,6 +108,17 @@ curl -X POST "http://127.0.0.1:8900/compress/base64?quality=80" \
      -d '{"data":"<base64>","filename":"a.jpg"}'
 ```
 
+## WebUI
+
+镜像内置一个自包含单页，浏览器直接打开 `http://<host>:8900/` 即可用，**不需要额外部署前端、不依赖 CDN**。
+
+- 页面对接的是**本服务自身的 `POST /compress`**（multipart），不引入第二个后端
+- 支持固定质量 / 目标体积 / 强制宽高 / `focus_alpha` 四个参数
+- 展示压缩前后体积、输出/原始比例、尺寸、格式与编码耗时，可分别下载原图与结果
+- **不写服务器磁盘**：页面只接收接口返回的字节流，与 `LUBAN_ALLOWED_ROOTS` 无关（配了也不会被 WebUI 触发落盘）
+
+页面随二进制一起发布（`include_str!`），改页面须重新编译镜像。
+
 ## MCP 服务
 
 端点：`POST /mcp`，遵循 MCP 2024-11-05 Streamable HTTP（JSON-RPC 2.0 over POST，**无状态**，不维护会话 id）。
@@ -120,26 +135,51 @@ curl -X POST "http://127.0.0.1:8900/compress/base64?quality=80" \
 
 `compress_image` 支持 `quality` / `target_kb` / `width` / `height` / `focus_alpha` 参数。
 
-### 路径白名单
+### 磁盘缓存开关 `LUBAN_ALLOWED_ROOTS`
 
-所有路径参数都会解析 symlink 后校验是否落在 `LUBAN_ALLOWED_ROOTS`（冒号分隔）之内，否则拒绝。
+服务默认**不落盘**：压缩结果直接从接口返回，服务器不留任何图片副本。
+
+| 配置 | 行为 |
+|---|---|
+| **未配置**（默认） | `compress_image` 在 `content` 里返回图片内容（base64）+ 摘要；本地不产生文件。`compress_batch` 返回错误，提示改用单张 |
+| **已配置**（冒号分隔的目录） | 启用磁盘模式：路径须落在这些根目录内，压缩结果写为 `<原名>.compressed.jpg/.png`，返回文件路径 + 摘要 |
+
+典型用法：普通/免费调用不配置（不为服务器制造图片副本）；需要为客户保留备份兜底时再配置（VIP 场景）。
+
+> ⚠️ **两种部署形式不可混用，先确认你要哪一种再起容器：**
+>
+> | 用途 | 必须做的 | 漏了会怎样 |
+> |---|---|---|
+> | **只做 API / MCP 转压（默认，推荐）** | 不设 `LUBAN_ALLOWED_ROOTS`，也**不用挂载任何图片目录** | 无影响；结果始终从接口返回 |
+> | **需要服务器缓存 / 客户端兜底回取（VIP）** | ① 设 `LUBAN_ALLOWED_ROOTS`；② **同时把这几个目录挂进容器**；③ 目录须对容器用户 `uid 10001` 可写 | 缺②→ 容器内看不到图，报「路径不可用」；缺③ 或属主不对→ 报 `Permission denied`，压缩结果写不进去 |
+>
+> **调用方式也随之不同：**
+> - 不落盘模式：模型/客户端**一次性拿到图片内容**，自己保存；服务端无任何残留，重复调用会重新压缩。
+> - 磁盘模式：调用后要**自行去白名单目录取回** `<原名>.compressed.jpg`；同一张图重复调用会覆盖上一次的产物（不加序号、不留历史版本）。
+>
+> **不要把两种混着用**：例如只设了 `LUBAN_ALLOWED_ROOTS` 而没挂载目录、或挂了目录却忘了设变量——前者会让所有路径校验失败，后者会让批量工具直接报「需要配置 LUBAN_ALLOWED_ROOTS」。
 
 ## 部署
 
 ```sh
 # 构建
-docker build -t luban-api:0.2.1 rust/
+docker build -t luban-api:0.2.3 rust/
 
-# 运行
+# 运行（默认：不落盘）
+docker run -d --name luban-api --restart unless-stopped \
+  -p 8900:8900 -e HOST=0.0.0.0 -e PORT=8900 \
+  luban-api:0.2.3
+
+# 运行（磁盘模式：额外加挂载与白名单）
 docker run -d --name luban-api --restart unless-stopped \
   -p 8900:8900 \
   -v /your/images:/your/images \
   -e LUBAN_ALLOWED_ROOTS=/your/images \
   -e HOST=0.0.0.0 -e PORT=8900 \
-  luban-api:0.2.1
+  luban-api:0.2.3
 ```
 
-镜像已推送至内网私库：`10.168.3.165:5000/aspnmy/luban-api:0.2.1`（同 `latest`）。
+镜像已推送至内网私库：`10.168.3.165:5000/aspnmy/luban-api:0.2.3`（同 `latest`）。
 
 ## 环境变量
 
@@ -147,7 +187,7 @@ docker run -d --name luban-api --restart unless-stopped \
 |---|---|
 | `HOST` | 监听地址，默认 `0.0.0.0` |
 | `PORT` | 监听端口，默认 `8900` |
-| `LUBAN_ALLOWED_ROOTS` | 允许访问的根目录，冒号分隔 |
+| `LUBAN_ALLOWED_ROOTS` | 磁盘缓存开关。留空 = 不落盘（默认）；填目录 = 启用磁盘模式，多个用冒号分隔 |
 | `TZ` | 时区 |
 
 ## 开发与验证
@@ -164,6 +204,8 @@ cargo run --release
 
 | 版本 | 变更 |
 |---|---|
+| 0.2.3 | 内置 WebUI 单页（`GET /`、`/index.html`，随二进制发布、零外部资源、直连自身 `/compress`、不落盘） |
+| 0.2.2 | `LUBAN_ALLOWED_ROOTS` 改为可选磁盘缓存开关：留空 ⇒ MCP 直接返回图片字节、服务器不落盘；配置 ⇒ 落盘白名单目录。编排文件改为可选挂载 |
 | 0.2.1 | 还原 `setFocusAlpha` 语义：PNG 透明通道集中压缩（带 alpha 的 PNG 输出 PNG）、`focus_alpha` 参数、MCP/HTTP 双通道支持 |
 | 0.2.0 | MCP Streamable HTTP 三工具；路径白名单；缩放分支实测通过 |
 | 0.1.0 | 算法内核移植与基础 HTTP API |

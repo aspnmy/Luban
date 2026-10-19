@@ -384,6 +384,8 @@ pub fn build_router() -> Router {
         .route("/info", get(handle_info))
         .route("/compress", post(handle_compress))
         .route("/compress/base64", post(handle_compress_base64))
+        .route("/", get(crate::webui::handle_index))
+        .route("/index.html", get(crate::webui::handle_index))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .merge(crate::mcp::build_mcp_router(mcp_state))
 }
@@ -392,7 +394,7 @@ pub fn build_router() -> Router {
 
 const B64_CHARS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-fn base64_encode(input: &[u8]) -> String {
+pub fn base64_encode(input: &[u8]) -> String {
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
         let b = [

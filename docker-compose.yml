@@ -1,16 +1,17 @@
 # Luban 图片压缩服务 —— Docker 编排
 #
-# 服务定位：为 LLM 网关提供图片压缩的 MCP 服务（HTTP API + MCP 双通道）
-# 镜像：luban-api:0.2.1（内网私库 10.168.3.165:5000/aspnmy/luban-api:0.2.1）
+# 定位：独立的图片压缩 API 服务（POST 图片 → 返回压缩后的字节流），
+#       MCP 只是给模型助手用的适配层，服务本身与模型无关。
+# 镜像：luban-api:0.2.3（内网私库 10.168.3.165:5000/aspnmy/luban-api:0.2.3）
 #
-# ⚠️ 必填项：
-#   LUBAN_ALLOWED_ROOTS —— 允许被压缩/读取的根目录（冒号分隔）。
-#   ⛔ 不设平台相关兜底路径；未配置时服务会拒绝所有路径参数。
-#   ⚠️ 挂载卷必须与本变量保持一致，否则路径白名单校验必然失败。
+# 磁盘缓存开关（可选）：
+#   LUBAN_ALLOWED_ROOTS 未配置 ⇒ 压缩结果只从接口返回，服务器不留任何图片副本（默认，推荐）
+#   LUBAN_ALLOWED_ROOTS 已配置 ⇒ 启用磁盘模式，结果落盘到该目录（VIP/客户兜底备份等场景）
+#   多个目录用冒号分隔；配了就必须同时挂载对应目录。
 
 services:
   luban-api:
-    image: luban-api:0.2.1
+    image: luban-api:0.2.3
     container_name: luban-api
     restart: unless-stopped
     ports:
@@ -19,14 +20,12 @@ services:
       TZ: Asia/Shanghai
       HOST: 0.0.0.0
       PORT: "8900"
-      # 冒号分隔；与下面 volumes 的挂载点保持一致
-      LUBAN_ALLOWED_ROOTS: ${LUBAN_ALLOWED_ROOTS:?set LUBAN_ALLOWED_ROOTS to the allowed image roots}
+      # 留空 = 不落盘（默认）；填目录 = 启用服务器端缓存
+      LUBAN_ALLOWED_ROOTS: ${LUBAN_ALLOWED_ROOTS:-}
     volumes:
-      # 宿主机图片目录 → 容器内同路径（读写：压缩结果写回同目录）
-      # 宿主侧目录按实际资源位置改；此处给出与本机现役一致的示例
+      # 仅在启用磁盘缓存时需要挂载；目录须对容器用户 uid 10001 可写
       - ${LUBAN_IMAGE_ROOT:-/mnt/e/OK/scripts}:${LUBAN_IMAGE_ROOT:-/mnt/e/OK/scripts}
-    # 镜像自带非 root 用户 luban(uid 10001) ⇒ 挂载目录需对该 uid 可写，
-    # 否则 compress_image 无法写出 <原名>.compressed.jpg（Permission denied）
+    # 镜像自带非 root 用户 luban(uid 10001)
     user: "10001:10001"
     healthcheck:
       test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8900 && printf 'GET /health HTTP/1.0\\r\\n\\r\\n' >&3 && head -1 <&3 | grep -q 200"]
